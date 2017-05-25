@@ -1,0 +1,98 @@
+import numpy as np
+import argparse
+import imutils
+import cv2
+import video
+import common
+from common import anorm2, draw_str
+from time import clock
+# construct the argument parse and parse the arguments
+ap = argparse.ArgumentParser()
+ap.add_argument("-v", "--video",
+    help="path to the (optional) video file")
+ap.add_argument("-b", "--buffer", type=int, default=64,
+    help="max buffer size")
+args = vars(ap.parse_args())
+
+# define range of blue color in HSV
+lower_green = np.array([29,86,6])
+upper_green = np.array([64,255,255])
+lk_params = dict( winSize  = (15, 15),
+                  maxLevel = 2,
+                  criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03),
+                  minEigThreshold=1e-4)
+
+feature_params = dict( maxCorners = 10,
+                       qualityLevel = 0.3,
+                       minDistance = 10,
+                       blockSize = 25 )
+
+
+# if a video path was not supplied, grab the reference
+# to the webcam
+if not args.get("video", False):
+    camera = cv2.VideoCapture(0)
+if camera.isOpened():
+    print "Successful"
+
+# otherwise, grab a reference to the video file
+else:
+    camera = cv2.VideoCapture(args["video"])
+
+
+class App:
+    def __init__(self, camera):
+        self.track_len = 10
+        self.detect_interval = 5
+        self.tracks = []
+        self.cam = video.create_capture()
+        self.frame_idx = 0
+
+    def run(self):
+        while True:
+            ret,frame = self.cam.read()
+            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            vis = frame.copy()
+
+            if len(self.tracks) > 0:
+                img0, img1 = self.prev_gray, frame_gray
+                p0 = np.float32([tr[-1] for tr in self.tracks]).reshape(-1, 1, 2)
+                p1, st, err = cv2.calcOpticalFlowPyrLK(img0, img1, p0, None, **lk_params)
+                p0r, st, err = cv2.calcOpticalFlowPyrLK(img1, img0, p1, None, **lk_params)
+                d = abs(p0-p0r).reshape(-1, 2).max(-1)
+                good = d < 1000000
+                new_tracks = []
+                for tr, (x, y), good_flag in zip(self.tracks, p1.reshape(-1, 2), good):
+                    if not good_flag:
+                        continue
+                    tr.append((x, y))
+                    if len(tr) > self.track_len:
+                        del tr[0]
+                    new_tracks.append(tr)
+                    cv2.circle(vis, (x, y), 2, (0, 255, 0), -1)
+                self.tracks = new_tracks
+                cv2.polylines(vis, [np.int32(tr) for tr in self.tracks], False, (0, 255, 0))
+                draw_str(vis, (200, 200), 'track count: %d' % len(self.tracks))
+
+            if self.frame_idx % self.detect_interval == 0:
+                #Threshold the HSV image to get only blue colors
+                mask = cv2.inRange(frame_gray, lower_green, upper_green)
+                # Bitwise-AND mask and original image
+                res = cv2.bitwise_and(frame,frame, mask= mask)      
+                for x, y in [np.int32(tr[-1]) for tr in self.tracks]:
+                    cv2.circle(mask, (x, y), 5, 0, -1)
+                
+           
+            
+            self.frame_idx += 1
+            self.prev_gray = frame_gray
+            cv2.imshow('frame',frame)
+            cv2.imshow('mask',mask)
+            cv2.imshow('res',res)
+            cv2.imshow('lk_track', vis)
+
+            k = cv2.waitKey(5) & 0xFF
+            if k == 27:
+                break
+App(camera).run()
+cv2.destroyAllWindows()
